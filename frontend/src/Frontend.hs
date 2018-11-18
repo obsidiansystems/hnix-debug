@@ -58,15 +58,20 @@ frontend :: Frontend (R FrontendRoute)
 frontend = Frontend
   { _frontend_head = el "title" $ text "Obelisk Minimal Example"
   , _frontend_body = do
-      case parseNixText inputText of
-        Success a -> do
-          p <- el "pre" $ renderP $ cata Free a
-          pure ()
-        Failure _ -> text "parse failed"
+      exprStr <- el "div" $ textAreaElement $ def & textAreaElementConfig_initialValue .~ inputText0
+      goNow <- el "div" $ button "Go"
+      let go inputText =
+            case parseNixText inputText of
+              Success a -> do
+                p <- el "pre" $ renderP $ cata Free a
+                pure ()
+              Failure _ -> text "parse failed"
+      _ <- el "div" $ widgetHold (go inputText0) $ go <$> current (value exprStr) <@ goNow
+      pure ()
   }
 
-inputText :: Text
-inputText = "false && true"
+inputText0 :: Text
+inputText0 = "false && true"
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
