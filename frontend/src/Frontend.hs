@@ -91,9 +91,9 @@ renderP e = do
                 Free _ -> do
                   text "?"
                   pure never
-              newExpr <- sequence <$> renderExpr renderP expr
+              newExpr <- sequence <$> renderExpr renderP expr --TODO: Is there a way we can reuse the rendered DOM?
           pure (doReduce, Free <$> newExpr)
-      renderReduced expr = case runIdentity $ reduce' expr of
+      renderReduced expr = case runIdentity $ reduce expr of
         Left err -> do
           text $ "error reducing: " <> tshow err
           pure (never, pure $ Free $ fmap Pure expr)
@@ -117,24 +117,11 @@ instance MonadThrow Identity
 instance MonadRef Identity where
   type Ref Identity = RefIdentity
 
-reduce' :: NExprF (NValue (NixDebug Identity)) -> Identity (Either [SomeException] (Either () (NValue (NixDebug Identity))))
-reduce' e = runNixDebug $ eval $ pure <$> e
-
-{-
---TODO: Use new workflow monad
-renderRedex :: (DomBuilder t m, MonadHold t m, PerformEvent t m, MonadIO (Performable m)) => NExpr -> m ()
-renderRedex e = do
-  text "("
-  doReduce <- button "R"
-  reduced <- performEvent $ ffor doReduce $ \() -> liftIO (reduce e) >>= pure . \case
-    Left err -> text $ "error reducing: " <> tshow err
-    Right r -> case r of
-      Left () -> text "can't reduce yet"
-      Right val -> text "reduced"
-  _ <- widgetHold (renderExpr renderRedex $ unFix e) reduced
-  text ")"
-  pure ()
--}
+--TODO: Leverage existing pretty-printer
+--TODO: Styling of "reduce" button
+--TODO: Small-step reduction
+reduce :: NExprF (NValue (NixDebug Identity)) -> Identity (Either [SomeException] (Either () (NValue (NixDebug Identity))))
+reduce e = runNixDebug $ eval $ pure <$> e
 
 instance Error SomeException where
   noMsg = SomeException $ ErrorCall "unknown error"
@@ -200,12 +187,6 @@ instance Monad m => Scoped (NThunk (NixDebug m)) (NixDebug m) where
 
 runNixDebug :: NixDebug m a -> m (Either [SomeException] (Either () a))
 runNixDebug (NixDebug a) = runReaderT (runExceptT (runExceptT a)) (newContext (defaultOptions $ posixSecondsToUTCTime 0))
-
---TODO: Leverage existing pretty-printer
---TODO: Styling of "reduce" button
---TODO: Small-step reduction
-reduce :: (MonadCatch m, MonadFix m, MonadAtomicRef m, GEq (Ref m), Typeable m) => NExpr -> m (Either [SomeException] (Either () (NValue (NixDebug m))))
-reduce (Fix e) = runNixDebug $ eval $ NixDebug (throwError ()) <$ e
 
 renderExpr :: DomBuilder t m => (r -> m a) -> NExprF r -> m (NExprF a)
 renderExpr r e = case e of
