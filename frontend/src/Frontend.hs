@@ -47,6 +47,7 @@ import Nix.Parser
 import Nix.Pretty (valueToExpr)
 import Nix.Render
 import Nix.Scope
+import Nix.String
 import Nix.Value
 import Obelisk.Frontend
 import Obelisk.Route
@@ -60,34 +61,38 @@ frontend = Frontend
       case parseNixText inputText of
         Success a -> do
           p <- el "pre" $ renderP $ cata Free a
-          el "div" $ display p
           pure ()
         Failure _ -> text "parse failed"
   }
 
 inputText :: Text
-inputText = "1 + 2 * 3"
+inputText = "\"asdf\" + \"qwer\""
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
 type PExpr = Free NExprF (NValue (NixDebug Identity))
 
-renderP :: (DomBuilder t m, MonadHold t m, MonadFix m) => PExpr -> m (Dynamic t PExpr)
+renderValue :: DomBuilder t m => NValue (NixDebug Identity) -> m ()
+renderValue v = case _baseValue v of
+  NVConstantF a -> text $ atomText a
+  NVStrF s -> text $ tshow $ hackyStringIgnoreContext s
+
+renderP :: (DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m) => PExpr -> m (Dynamic t PExpr)
 renderP e = do
   let renderLevel = \case
         v@(Pure a) -> do
-          text $ tshow a
+          renderValue a
           pure (never, pure v)
         f@(Free expr) -> do
-          doReduce <- case sequence expr of --TODO: Sometimes we can reduce without reducing all the children
-            Pure expr -> do
-              fmap (expr <$) $ button "R"
-            Free _ -> do
-              text "?"
-              pure never
-          x <- renderExpr renderP expr
-          pure (doReduce, Free <$> sequence x)
+          rec doReduce <- switchHold never <=< dyn $ ffor newExpr $ \e -> case sequence e of --TODO: Sometimes we can reduce without reducing all the children
+                Pure expr -> do
+                  fmap (expr <$) $ button "R"
+                Free _ -> do
+                  text "?"
+                  pure never
+              newExpr <- sequence <$> renderExpr renderP expr
+          pure (doReduce, Free <$> newExpr)
       renderReduced expr = case runIdentity $ reduce' expr of
         Left err -> do
           text $ "error reducing: " <> tshow err
@@ -113,7 +118,7 @@ instance MonadRef Identity where
   type Ref Identity = RefIdentity
 
 reduce' :: NExprF (NValue (NixDebug Identity)) -> Identity (Either [SomeException] (Either () (NValue (NixDebug Identity))))
-reduce' e = runNixDebug $ eval $ NixDebug (throwError ()) <$ e
+reduce' e = runNixDebug $ eval $ pure <$> e
 
 {-
 --TODO: Use new workflow monad
@@ -242,6 +247,15 @@ renderExpr r e = case e of
         text " "
     b' <- r b
     pure $ NBinary op a' b'
+  NStr s -> NStr <$> case s of
+    DoubleQuoted l -> do
+      text "\""
+      l' <- forM l $ \case
+        Plain v -> do
+          text v
+          pure $ Plain v
+      text "\""
+      pure $ DoubleQuoted l'
 
 renderAttrPath :: DomBuilder t m => (r -> m a) -> NAttrPath r -> m (NAttrPath a)
 renderAttrPath r (h :| t) = do
@@ -286,89 +300,3 @@ renderBinds r b = forM b $ \i -> do
       pure $ Inherit mCtx' names' x
   text ";"
   pure bind'
-
---newtype EvalWidget t m a = ReaderT (Dynamic t (Context (EvalWidget t m) (NThunk (EvalWidget t m)))) m a
---
---instance Scoped (Dynamic t (NValue (EvalWidget t m))) (EvalWidget t m) where
---  currentScopes = 
-
-{-
-renderExpr' :: DomBuilder t m => NExpr -> EvalWidget t m a
-renderExpr' = eval
---}
-{-
-newtype DynLazy t m a = DynLazy { unDynLazy :: Dynamic t (Lazy m a) }
-
-newtype DynamicT t m a = DynamicT { unDynamicT :: Dynamic t (m a) }
-
-instance (Functor m, Reflex t) => Functor (DynamicT t m) where
-  fmap f = DynamicT . fmap (fmap f) . unDynamicT
-
-instance (Applicative m, Reflex t) => Applicative (DynamicT t m) where
-  pure = DynamicT . pure . pure
-  DynamicT f <*> DynamicT x = DynamicT $ liftA2 (<*>) f x
-  liftA2 f (DynamicT a) (DynamicT b) = DynamicT $ liftA2 (liftA2 f) a b
-  DynamicT a *> DynamicT b = DynamicT $ liftA2 (*>) a b
-  DynamicT a <* DynamicT b = DynamicT $ liftA2 (<*) a b
-
-{-
-f :: Dynamic t (Int -> (Int, Dynamic t (Int -> (Int, a))))
-  -> Dynamic t (Int -> (Int, a))
-f d1 = buildDynamic getInitial undefined
-  where getInitial = do
-          f <- sample $ current d1
-          pure $ \n -> f x
--}
-
-
-
-type MDyn = m (Behavior t a, Event t (m a))
-
-
-joinDynThrough :: forall t f a. (Reflex t, Traversable f, Align f) => Dynamic t (f (Dynamic t a)) -> Dynamic t (f a)
-joinDynThrough dd =
-  let u = alignWith $ \case --TODO: This is inefficient; we shouldn't traverse the whole thing
-        This a -> a
-        That a -> a
-        These _ a -> a
-      mrg :: forall a. f (Event t a) -> Event t (f a)
-      mrg = undefined -- mergeMap
-      b' = pull $ mapM (sample . current) =<< sample (current dd)
-      eOuter :: Event t (f a) = pushAlways (mapM (sample . current)) $ updated dd
-      eInner :: Event t (f a) = attachWith u b' $ switch $ fmap (mrg . fmap updated) (current dd) --Note: the flip is important because Map.union is left-biased
-      readNonFiring :: MonadSample t m => These (Dynamic t a) a -> m a
-      readNonFiring = \case
-        This d -> sample $ current d
-        That a -> return a
-        These _ a -> return a
-      eBoth :: Event t (f a) = coincidence $ fmap (\m -> pushAlways (mapM readNonFiring . align m) $ mrg $ fmap updated m) (updated dd)
-      e' = leftmost [eBoth, eOuter, eInner]
-  in unsafeBuildDynamic (sample b') e'
-
-{-
-distributeFOverDynPure :: forall t f. Reflex t => f (Dynamic t) -> Dynamic t (f Identity)
-distributeFOverDynPure dm =
-    let getInitial = DMap.traverseWithKey (\_ -> fmap Identity . sample . current) dm
-        edmPre = merge $ DMap.map updated dm
-        result = unsafeBuildDynamic getInitial $ flip pushAlways edmPre $ \news -> do
-          olds <- sample $ current result
-          return $ DMap.unionWithKey (\_ _ new -> new) olds news
-    in result
--}
-
-instance (Monad m, Reflex t) => Monad (DynamicT t m) where
-  return = pure
---  DynamicT dmx >>= f = do
---    mx <- dmx
-    
--- DynamicT $ fmap join $ joinDyn $ fmap (fmap (unDynamicT . f)) x
-  (>>) = (*>)
-  fail = DynamicT . pure . fail
-
-{-
-instance Scoped (Dynamic t (NThunk (DynLazy t m))) (DynLazy t m) where
-  currentScopes = fmap currentScopes
--}
-
---newtype ExprW = ExprW { unExprW :: ReaderT (Dynamic t (Context ...)) ( }
--}
