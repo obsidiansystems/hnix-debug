@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -65,21 +66,54 @@ frontend = Frontend
   }
 
 inputText :: Text
-inputText = "let x = 1; in x"
+inputText = "1 + 2 * 3"
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
-type PExpr = Free NExprF (Fix (NValueF Identity))
+type PExpr = Free NExprF (NValue (NixDebug Identity))
 
-renderP :: DomBuilder t m => PExpr -> m (Dynamic t PExpr)
-renderP = \case
-  v@(Pure a) -> do
-    text $ tshow a
-    pure $ pure v
-  f@(Free expr) -> do
-    x <- renderExpr renderP expr
-    pure $ Free <$> sequence x
+renderP :: (DomBuilder t m, MonadHold t m, MonadFix m) => PExpr -> m (Dynamic t PExpr)
+renderP e = do
+  let renderLevel = \case
+        v@(Pure a) -> do
+          text $ tshow a
+          pure (never, pure v)
+        f@(Free expr) -> do
+          doReduce <- case sequence expr of --TODO: Sometimes we can reduce without reducing all the children
+            Pure expr -> do
+              fmap (expr <$) $ button "R"
+            Free _ -> do
+              text "?"
+              pure never
+          x <- renderExpr renderP expr
+          pure (doReduce, Free <$> sequence x)
+      renderReduced expr = case runIdentity $ reduce' expr of
+        Left err -> do
+          text $ "error reducing: " <> tshow err
+          pure (never, pure $ Free $ fmap Pure expr)
+        Right r -> case r of
+          Left () -> do
+            text "can't reduce yet"
+            pure (never, pure $ Free $ fmap Pure expr)
+          Right val -> renderLevel $ Pure val
+  rec r <- widgetHold (renderLevel e) (renderReduced <$> doReduce)
+      let doReduce = switch $ fst <$> current r
+          e' = joinDyn $ snd <$> r
+  pure e'
+
+data RefIdentity a
+
+instance GEq RefIdentity
+
+instance MonadCatch Identity
+instance MonadThrow Identity
+
+instance MonadRef Identity where
+  type Ref Identity = RefIdentity
+
+reduce' :: NExprF (NValue (NixDebug Identity)) -> Identity (Either [SomeException] (Either () (NValue (NixDebug Identity))))
+reduce' e = runNixDebug $ eval $ NixDebug (throwError ()) <$ e
 
 {-
 --TODO: Use new workflow monad
@@ -142,14 +176,14 @@ instance Monad m => MonadFile (NixDebug m) where
   doesDirectoryExist = undefined
   getSymbolicLinkStatus = undefined
 
-instance MonadRef m => MonadRef (NixDebug m) where
+instance Monad m => MonadRef (NixDebug m) where
   type Ref (NixDebug m) = Ref m
-  newRef = lift . newRef
-  readRef = lift . readRef
-  writeRef r = lift . writeRef r
+  newRef = undefined
+  readRef = undefined
+  writeRef = undefined
 
-instance MonadAtomicRef m => MonadAtomicRef (NixDebug m) where
-  atomicModifyRef r = lift . atomicModifyRef r
+instance Monad m => MonadAtomicRef (NixDebug m) where
+  atomicModifyRef = undefined
 
 instance Monad m => MonadEffects (NixDebug m)
 
