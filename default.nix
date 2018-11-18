@@ -2,13 +2,17 @@
 , iosSdkVersion ? "10.2"
 }:
 with import ./.obelisk/impl { inherit system iosSdkVersion; };
-project ./. ({ pkgs, ... }: {
+project ./. ({ pkgs, hackGet, ... }: {
   packages = {
-    hnix = ../hnix;
+    hnix = hackGet ./dep/hnix;
   };
-  overrides = with pkgs.haskell.lib; self: super: {
+  overrides = with pkgs.haskell.lib; self: super: if super.ghc.isGhcjs or false then {
     hnix = dontCheck super.hnix;
-  };
+    Glob = dontCheck super.Glob;
+    conduit = dontCheck super.conduit;
+    yaml = dontCheck super.yaml;
+    hpack = dontCheck super.hpack;
+  } else {};
   android.applicationId = "systems.obsidian.obelisk.examples.minimal";
   android.displayName = "Obelisk Minimal Example";
   ios.bundleIdentifier = "systems.obsidian.obelisk.examples.minimal";

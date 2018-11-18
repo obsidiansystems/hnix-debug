@@ -1,18 +1,19 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE EmptyCase #-}
+{-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RecursiveDo #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 module Frontend where
 
 import Common.Route
@@ -58,7 +59,9 @@ import Data.Functor.Identity
 
 frontend :: Frontend (R FrontendRoute)
 frontend = Frontend
-  { _frontend_head = el "title" $ text "Obelisk Minimal Example"
+  { _frontend_head = do
+      el "title" $ text "Obelisk Minimal Example"
+      elAttr "style" ("type" =: "text/css") $ text ".expr:hover { background: rgba(100,200,100,0.2); }"
   , _frontend_body = do
       exprStr <- el "div" $ textAreaElement $ def & textAreaElementConfig_initialValue .~ inputText0
       goNow <- el "div" $ button "Go"
@@ -101,10 +104,10 @@ renderP :: forall t m. (DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m
 renderP e = do
   let renderLevel :: PExpr -> m (Event t (NValue (NixDebug Identity)), Dynamic t PExpr)
       renderLevel = \case
-        v@(Pure a) -> do
+        v@(Pure a) -> elAttr "span" ("class" =: "value") $ do
           renderValue a
           pure (never, pure v)
-        f@(Free expr) -> do
+        f@(Free expr) -> elAttr "span" ("class" =: ("expr expr-" <> spanType expr)) $ do
           rec doReduce <- switchHold never <=< dyn $ ffor newExpr $ \e -> case runIdentity $ reduce e of --TODO: Sometimes we can reduce without reducing all the children
                 Left err -> do
                   text "E"
@@ -206,6 +209,18 @@ instance Monad m => Scoped (NThunk (NixDebug m)) (NixDebug m) where
 
 runNixDebug :: NixDebug m a -> m (Either [SomeException] (Either () a))
 runNixDebug (NixDebug a) = runReaderT (runExceptT (runExceptT a)) (newContext (defaultOptions $ posixSecondsToUTCTime 0))
+
+spanType :: NExprF a -> Text
+spanType = \case
+  NConstant _ -> "constant"
+  NSym _ -> "sym"
+  NLet _ _ -> "let"
+  NList _ -> "list"
+  NSet _ -> "set"
+  NRecSet _ -> "rec-set"
+  NSelect _ _ _ -> "select"
+  NBinary _ _ _ -> "binary"
+  NStr _ -> "str"
 
 renderExpr :: DomBuilder t m => (r -> m a) -> NExprF r -> m (NExprF a)
 renderExpr r e = case e of

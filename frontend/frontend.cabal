@@ -7,12 +7,22 @@ library
   hs-source-dirs: src
   build-depends: base
                , common
+               , data-fix
+               , dependent-sum
+               , exceptions
+               , free
                , hnix
+               , lens
+               , mtl
                , obelisk-frontend
                , obelisk-generated-static
                , obelisk-route
+               , ref-tf
                , reflex-dom
                , text
+               , these
+               , time
+               , transformers
   exposed-modules:
     Frontend
   ghc-options: -Wall
