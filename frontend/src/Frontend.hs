@@ -17,6 +17,7 @@ module Frontend where
 
 import Common.Route
 import Control.Applicative
+import Control.Lens (ifor_)
 import Control.Monad
 import Control.Monad.Catch
 import Control.Monad.Except
@@ -48,6 +49,7 @@ import Nix.Pretty (valueToExpr)
 import Nix.Render
 import Nix.Scope
 import Nix.String
+import Nix.Thunk (Thunk (..))
 import Nix.Value
 import Obelisk.Frontend
 import Obelisk.Route
@@ -82,13 +84,22 @@ renderValue :: DomBuilder t m => NValue (NixDebug Identity) -> m ()
 renderValue v = case _baseValue v of
   NVConstantF a -> text $ atomText a
   NVStrF s -> text $ tshow $ hackyStringIgnoreContext s
+  NVSetF vals _ -> do
+    text "{ "
+    ifor_ vals $ \k t -> do
+      text $ tshow k <> " = "
+      renderThunk t
+      text "; "
+    text "}"
+  x -> text $ tshow x
 
---type T = NExprF (NValue (NixDebug Identity))
-type T = NValue (NixDebug Identity)
+renderThunk :: DomBuilder t m => NThunk (NixDebug Identity) -> m ()
+renderThunk t = case _baseThunk t of
+  Value v -> renderValue v
 
 renderP :: forall t m. (DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m) => PExpr -> m (Dynamic t PExpr)
 renderP e = do
-  let renderLevel :: PExpr -> m (Event t T, Dynamic t PExpr)
+  let renderLevel :: PExpr -> m (Event t (NValue (NixDebug Identity)), Dynamic t PExpr)
       renderLevel = \case
         v@(Pure a) -> do
           renderValue a
