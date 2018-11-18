@@ -66,7 +66,7 @@ frontend = Frontend
   }
 
 inputText :: Text
-inputText = "\"asdf\" + \"qwer\""
+inputText = "false && true"
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
@@ -78,31 +78,31 @@ renderValue v = case _baseValue v of
   NVConstantF a -> text $ atomText a
   NVStrF s -> text $ tshow $ hackyStringIgnoreContext s
 
-renderP :: (DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m) => PExpr -> m (Dynamic t PExpr)
+--type T = NExprF (NValue (NixDebug Identity))
+type T = NValue (NixDebug Identity)
+
+renderP :: forall t m. (DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m) => PExpr -> m (Dynamic t PExpr)
 renderP e = do
-  let renderLevel = \case
+  let renderLevel :: PExpr -> m (Event t T, Dynamic t PExpr)
+      renderLevel = \case
         v@(Pure a) -> do
           renderValue a
           pure (never, pure v)
         f@(Free expr) -> do
-          rec doReduce <- switchHold never <=< dyn $ ffor newExpr $ \e -> case sequence e of --TODO: Sometimes we can reduce without reducing all the children
-                Pure expr -> do
-                  fmap (expr <$) $ button "R"
-                Free _ -> do
+          rec doReduce <- switchHold never <=< dyn $ ffor newExpr $ \e -> case runIdentity $ reduce e of --TODO: Sometimes we can reduce without reducing all the children
+                Left err -> do
+                  text "E"
+                  pure never
+                Right (Left ()) -> do
                   text "?"
                   pure never
+                Right (Right val) -> do
+                  fmap (val <$) $ button "R"
               newExpr <- sequence <$> renderExpr renderP expr --TODO: Is there a way we can reuse the rendered DOM?
           pure (doReduce, Free <$> newExpr)
-      renderReduced expr = case runIdentity $ reduce expr of
-        Left err -> do
-          text $ "error reducing: " <> tshow err
-          pure (never, pure $ Free $ fmap Pure expr)
-        Right r -> case r of
-          Left () -> do
-            text "can't reduce yet"
-            pure (never, pure $ Free $ fmap Pure expr)
-          Right val -> renderLevel $ Pure val
-  rec r <- widgetHold (renderLevel e) (renderReduced <$> doReduce)
+  rec r <- widgetHold (renderLevel e) $ ffor doReduce $ \val -> do
+        renderValue val
+        pure (never, pure $ Pure val)
       let doReduce = switch $ fst <$> current r
           e' = joinDyn $ snd <$> r
   pure e'
@@ -120,8 +120,11 @@ instance MonadRef Identity where
 --TODO: Leverage existing pretty-printer
 --TODO: Styling of "reduce" button
 --TODO: Small-step reduction
-reduce :: NExprF (NValue (NixDebug Identity)) -> Identity (Either [SomeException] (Either () (NValue (NixDebug Identity))))
-reduce e = runNixDebug $ eval $ pure <$> e
+reduce :: NExprF PExpr -> Identity (Either [SomeException] (Either () (NValue (NixDebug Identity))))
+reduce e = runNixDebug $ eval $ f <$> e
+  where f = \case
+          Pure a -> pure a
+          Free _ -> NixDebug $ throwError ()
 
 instance Error SomeException where
   noMsg = SomeException $ ErrorCall "unknown error"
