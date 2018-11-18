@@ -19,6 +19,7 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.Catch
 import Control.Monad.Except
+import Control.Monad.Free
 import Control.Monad.Reader
 import Control.Monad.Ref
 import Control.Monad.State.Strict
@@ -56,7 +57,10 @@ frontend = Frontend
   { _frontend_head = el "title" $ text "Obelisk Minimal Example"
   , _frontend_body = do
       case parseNixText inputText of
-        Success a -> el "pre" $ renderRedex a
+        Success a -> do
+          p <- el "pre" $ renderP $ cata Free a
+          el "div" $ display p
+          pure ()
         Failure _ -> text "parse failed"
   }
 
@@ -66,6 +70,18 @@ inputText = "let x = 1; in x"
 tshow :: Show a => a -> Text
 tshow = T.pack . show
 
+type PExpr = Free NExprF (Fix (NValueF Identity))
+
+renderP :: DomBuilder t m => PExpr -> m (Dynamic t PExpr)
+renderP = \case
+  v@(Pure a) -> do
+    text $ tshow a
+    pure $ pure v
+  f@(Free expr) -> do
+    x <- renderExpr renderP expr
+    pure $ Free <$> sequence x
+
+{-
 --TODO: Use new workflow monad
 renderRedex :: (DomBuilder t m, MonadHold t m, PerformEvent t m, MonadIO (Performable m)) => NExpr -> m ()
 renderRedex e = do
@@ -79,6 +95,7 @@ renderRedex e = do
   _ <- widgetHold (renderExpr renderRedex $ unFix e) reduced
   text ")"
   pure ()
+-}
 
 instance Error SomeException where
   noMsg = SomeException $ ErrorCall "unknown error"
@@ -142,80 +159,99 @@ instance Monad m => Scoped (NThunk (NixDebug m)) (NixDebug m) where
   pushScopes = pushScopesReader
   lookupVar = lookupVarReader
 
-runNixDebug :: MonadIO m => NixDebug m a -> m (Either [SomeException] (Either () a))
+runNixDebug :: NixDebug m a -> m (Either [SomeException] (Either () a))
 runNixDebug (NixDebug a) = runReaderT (runExceptT (runExceptT a)) (newContext (defaultOptions $ posixSecondsToUTCTime 0))
 
 --TODO: Leverage existing pretty-printer
 --TODO: Styling of "reduce" button
 --TODO: Small-step reduction
-reduce :: (MonadIO m, MonadCatch m, MonadFix m, MonadAtomicRef m, GEq (Ref m), Typeable m) => NExpr -> m (Either [SomeException] (Either () (NValue (NixDebug m))))
+reduce :: (MonadCatch m, MonadFix m, MonadAtomicRef m, GEq (Ref m), Typeable m) => NExpr -> m (Either [SomeException] (Either () (NValue (NixDebug m))))
 reduce (Fix e) = runNixDebug $ eval $ NixDebug (throwError ()) <$ e
 
-renderExpr :: DomBuilder t m => (r -> m ()) -> NExprF r -> m ()
+renderExpr :: DomBuilder t m => (r -> m a) -> NExprF r -> m (NExprF a)
 renderExpr r e = case e of
-  NConstant a -> text $ atomText a
-  NSym v -> text v
+  NConstant a -> do
+    text $ atomText a
+    pure $ NConstant a
+  NSym v -> do
+    text v
+    pure $ NSym v
   NLet binds body -> do
     text "let "
-    renderBinds r binds
+    binds' <- renderBinds r binds
     text " in "
-    r body
+    body' <- r body
+    pure $ NLet binds' body'
   NList l -> do
     text "[ "
-    forM_ l $ \i -> do
-      r i
-      text " "
+    l' <- forM l $ \i -> do
+      r i <* text " "
     text "]"
-  NSet b -> renderSet r b
-  NRecSet b -> text "rec " >> renderSet r b
-  NSelect s p _ -> do
-    r s
+    pure $ NList l'
+  NSet b -> NSet <$> renderSet r b
+  NRecSet b -> NRecSet <$> (text "rec " *> renderSet r b)
+  NSelect s p alt -> do
+    s' <- r s
     text "."
-    renderAttrPath r p
+    p' <- renderAttrPath r p
+    alt' <- forM alt $ \a -> do
+      text " or "
+      r a
+    pure $ NSelect s' p' alt'
   NBinary op a b -> do
-    r a
+    a' <- r a
     text " "
     case op of
       NApp -> blank
       _ -> do
         text $ operatorName $ getBinaryOperator op
         text " "
-    r b
+    b' <- r b
+    pure $ NBinary op a' b'
 
-renderAttrPath :: DomBuilder t m => (r -> m ()) -> NAttrPath r -> m ()
+renderAttrPath :: DomBuilder t m => (r -> m a) -> NAttrPath r -> m (NAttrPath a)
 renderAttrPath r (h :| t) = do
-  renderKeyName r h
-  forM_ t $ \n -> do
+  h' <- renderKeyName r h
+  t' <- forM t $ \n -> do
     text "."
     renderKeyName r n
+  pure $ h' :| t'
 
-renderKeyName :: DomBuilder t m => (r -> m ()) -> NKeyName r -> m ()
+renderKeyName :: DomBuilder t m => (r -> m a) -> NKeyName r -> m (NKeyName a)
 renderKeyName r = \case
-  StaticKey n -> text n
+  StaticKey n -> do
+    text n
+    pure $ StaticKey n
 
-renderSet :: DomBuilder t m => (r -> m ()) -> [Binding r] -> m ()
+renderSet :: DomBuilder t m => (r -> m a) -> [Binding r] -> m [Binding a]
 renderSet r b = do
   text "{"
-  renderBinds r b
+  b' <- renderBinds r b
   text "}"
+  pure b'
 
-renderBinds :: DomBuilder t m => (r -> m ()) -> [Binding r] -> m ()
-renderBinds r b = do
-  forM_ b $ \i -> do
-    case i of
-      NamedVar p v _ -> do
-        renderAttrPath r p
-        text " = "
-        r v
-      Inherit mCtx names _ -> do
-        text "inherit "
-        forM_ mCtx $ \ctx -> do
-          text "("
-          r ctx
-          text ")"
-        el "ul" $ forM_ names $ \i -> el "li" $ case i of
-          StaticKey n -> text n
-    text ";"
+renderBinds :: DomBuilder t m => (r -> m a) -> [Binding r] -> m [Binding a]
+renderBinds r b = forM b $ \i -> do
+  bind' <- case i of
+    NamedVar p v x -> do
+      p' <- renderAttrPath r p
+      text " = "
+      v' <- r v
+      pure $ NamedVar p' v' x
+    Inherit mCtx names x -> do
+      text "inherit "
+      mCtx' <- forM mCtx $ \ctx -> do
+        text "("
+        ctx' <- r ctx
+        text ")"
+        pure ctx'
+      names' <- forM names $ \i -> case i of
+        StaticKey n -> do
+          text n
+          pure $ StaticKey n
+      pure $ Inherit mCtx' names' x
+  text ";"
+  pure bind'
 
 --newtype EvalWidget t m a = ReaderT (Dynamic t (Context (EvalWidget t m) (NThunk (EvalWidget t m)))) m a
 --
