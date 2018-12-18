@@ -12,7 +12,21 @@ project ./. ({ pkgs, hackGet, ... }: {
     conduit = dontCheck super.conduit;
     yaml = dontCheck super.yaml;
     hpack = dontCheck super.hpack;
-  } else {};
+  } else {
+    hnix = overrideCabal super.hnix (attrs: {
+      testHaskellDepends = (attrs.testHaskellDepends or []) ++
+        [ pkgs.nix
+
+          # Use the same version of hpack no matter what the compiler version
+          # is, so that we know exactly what the contents of the generated
+          # .cabal file will be. Otherwise, Travis may error out claiming that
+          # the cabal file needs to be updated because the result is different
+          # that the version we committed to Git.
+          (justStaticExecutables pkgs.haskell.packages.ghc843.hpack)
+          (justStaticExecutables pkgs.haskell.packages.ghc843.criterion)
+        ];
+    });
+  };
   android.applicationId = "systems.obsidian.obelisk.examples.minimal";
   android.displayName = "Obelisk Minimal Example";
   ios.bundleIdentifier = "systems.obsidian.obelisk.examples.minimal";

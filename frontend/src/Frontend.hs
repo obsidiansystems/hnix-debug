@@ -25,28 +25,21 @@ import Control.Monad.Except
 import Control.Monad.Free
 import Control.Monad.Reader
 import Control.Monad.Ref
-import Control.Monad.State.Strict
 import Control.Monad.Trans.Error (Error (..))
-import Data.Align
 import Data.Fix
 import Data.GADT.Compare
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.These
 import Data.Time.Clock.POSIX
-import Data.Typeable
-import Nix (nixEvalExpr, ErrorCall (..))
+import Nix (ErrorCall (..))
 import Nix.Atoms
 import Nix.Context
 import Nix.Effects
 import Nix.Eval
-import Nix.Exec
 import Nix.Expr
-import Nix.Normal
 import Nix.Options (defaultOptions)
 import Nix.Parser
-import Nix.Pretty (valueToExpr)
 import Nix.Render
 import Nix.Scope
 import Nix.String
@@ -68,7 +61,7 @@ frontend = Frontend
       let go inputText =
             case parseNixText inputText of
               Success a -> do
-                p <- el "pre" $ renderP $ cata Free a
+                _ <- el "pre" $ renderP $ cata Free a
                 pure ()
               Failure _ -> text "parse failed"
       _ <- el "div" $ widgetHold (go inputText0) $ go <$> current (value exprStr) <@ goNow
@@ -107,12 +100,12 @@ renderP e = do
         v@(Pure a) -> elAttr "span" ("class" =: "value") $ do
           renderValue a
           pure (never, pure v)
-        f@(Free expr) -> elAttr "span" ("class" =: ("expr expr-" <> spanType expr)) $ do
-          rec doReduce <- switchHold never <=< dyn $ ffor newExpr $ \e -> case runIdentity $ reduce e of --TODO: Sometimes we can reduce without reducing all the children
-                Left err -> do
+        Free expr -> elAttr "span" ("class" =: ("expr expr-" <> spanType expr)) $ do
+          rec doReduce <- switchHold never <=< dyn $ ffor newExpr $ \expr' -> case runIdentity $ reduce expr' of --TODO: Sometimes we can reduce without reducing all the children
+                Left err -> elAttr "span" ("title" =: tshow err) $ do
                   text "E"
                   pure never
-                Right (Left ()) -> do
+                Right (Left ()) -> elAttr "span" ("title" =: "Not yet reducible - try reducing children") $ do
                   text "?"
                   pure never
                 Right (Right val) -> do
@@ -123,15 +116,18 @@ renderP e = do
         renderValue val
         pure (never, pure $ Pure val)
       let doReduce = switch $ fst <$> current r
-          e' = joinDyn $ snd <$> r
+          e' = join $ snd <$> r
   pure e'
 
 data RefIdentity a
 
 instance GEq RefIdentity
 
-instance MonadCatch Identity
-instance MonadThrow Identity
+instance Monad m => MonadCatch (NixDebug m) where
+  catch (NixDebug a) f = NixDebug $ mapExceptT (\b -> catchError b (\se -> case fromException se of { Nothing -> throwError se ; Just e -> runExceptT $ unNixDebug $ f e })) a
+
+instance Monad m => MonadThrow (NixDebug m) where
+  throwM = NixDebug . lift . throwError . toException
 
 instance MonadRef Identity where
   type Ref Identity = RefIdentity
@@ -139,7 +135,7 @@ instance MonadRef Identity where
 --TODO: Leverage existing pretty-printer
 --TODO: Styling of "reduce" button
 --TODO: Small-step reduction
-reduce :: NExprF PExpr -> Identity (Either [SomeException] (Either () (NValue (NixDebug Identity))))
+reduce :: NExprF PExpr -> Identity (Either SomeException (Either () (NValue (NixDebug Identity))))
 reduce e = runNixDebug $ eval $ f <$> e
   where f = \case
           Pure a -> pure a
@@ -149,8 +145,8 @@ instance Error SomeException where
   noMsg = SomeException $ ErrorCall "unknown error"
   strMsg = SomeException . ErrorCall
 
-newtype NixDebug m a = NixDebug { unNixDebug :: ExceptT () (ExceptT [SomeException] (ReaderT (Context (NixDebug m) (NThunk (NixDebug m))) m)) a }
-  deriving (Functor, Applicative, Monad, MonadPlus, Alternative, MonadCatch, MonadThrow, MonadFix, MonadReader (Context (NixDebug m) (NThunk (NixDebug m))))
+newtype NixDebug m a = NixDebug { unNixDebug :: ExceptT () (ExceptT SomeException (ReaderT (Context (NixDebug m) (NThunk (NixDebug m))) m)) a }
+  deriving (Functor, Applicative, Monad, MonadPlus, Alternative, MonadFix, MonadReader (Context (NixDebug m) (NThunk (NixDebug m))))
 
 instance MonadTrans NixDebug where
   lift = NixDebug . lift . lift . lift
@@ -159,47 +155,57 @@ instance Monad m => MonadIntrospect (NixDebug m) where
   recursiveSize _ = pure 0
 
 instance Monad m => MonadExec (NixDebug m) where
-  exec' e = fail $ "exec' " <> show e
+  exec' e = notImplemented $ "exec' " <> show e
 
 instance Monad m => MonadInstantiate (NixDebug m) where
-  instantiateExpr e = fail $ "instantiateExpr " <> show e
+  instantiateExpr e = notImplemented $ "instantiateExpr " <> show e
 
 instance Monad m => MonadEnv (NixDebug m) where
-  getEnvVar = undefined
-  getCurrentSystemOS = undefined
-  getCurrentSystemArch = undefined
+  getEnvVar _ = notImplemented "getEnvVar"
+  getCurrentSystemOS = notImplemented "getCurrentSystemOS"
+  getCurrentSystemArch = notImplemented "getCurrentSystemArch"
 
 instance Monad m => MonadHttp (NixDebug m) where
-  getURL = undefined
+  getURL _ = notImplemented "getURL"
 
 instance Monad m => MonadPutStr (NixDebug m) where
-  putStr = undefined
+  putStr _ = notImplemented "putStr"
 
 instance Monad m => MonadStore (NixDebug m) where
-  addPath' = undefined
-  toFile_' = undefined
+  addPath' _ = notImplemented "addPath'"
+  toFile_' _ _ = notImplemented "toFile_'"
 
 instance Monad m => MonadFile (NixDebug m) where
-  readFile = undefined
-  listDirectory = undefined
-  getCurrentDirectory = undefined
-  canonicalizePath = undefined
-  getHomeDirectory = undefined
-  doesPathExist = undefined
-  doesFileExist = undefined
-  doesDirectoryExist = undefined
-  getSymbolicLinkStatus = undefined
+  readFile _ = notImplemented "readFile"
+  listDirectory _ = notImplemented "listDirectory"
+  getCurrentDirectory = notImplemented "getCurrentDirectory"
+  canonicalizePath _ = notImplemented "canonicalizePath"
+  getHomeDirectory = notImplemented "getHomeDirectory"
+  doesPathExist _ = notImplemented "doesPathExist"
+  doesFileExist _ = notImplemented "doesFileExist"
+  doesDirectoryExist _ = notImplemented "doesDirectoryExist"
+  getSymbolicLinkStatus _ = notImplemented "getSymbolicLinkStatus"
 
 instance Monad m => MonadRef (NixDebug m) where
   type Ref (NixDebug m) = Ref m
-  newRef = undefined
-  readRef = undefined
-  writeRef = undefined
+  newRef _ = notImplemented "newRef"
+  readRef _ = notImplemented "readRef"
+  writeRef _ _ = notImplemented "writeRef"
 
 instance Monad m => MonadAtomicRef (NixDebug m) where
-  atomicModifyRef = undefined
+  atomicModifyRef _ _ = notImplemented "atomicModifyRef"
 
-instance Monad m => MonadEffects (NixDebug m)
+instance Monad m => MonadEffects (NixDebug m) where
+  makeAbsolutePath _ = notImplemented "makeAbsolutePath"
+  findEnvPath _ = notImplemented "findEnvPath"
+  findPath _ _ = notImplemented "findPath"
+
+  importPath _ = notImplemented "importPath"
+  pathToDefaultNix _ = notImplemented "pathToDefaultNix"
+
+  derivationStrict _ = notImplemented "derivationStrict"
+
+  traceEffect _ = notImplemented "traceEffect"
 
 instance Monad m => Scoped (NThunk (NixDebug m)) (NixDebug m) where
   currentScopes = currentScopesReader
@@ -207,7 +213,10 @@ instance Monad m => Scoped (NThunk (NixDebug m)) (NixDebug m) where
   pushScopes = pushScopesReader
   lookupVar = lookupVarReader
 
-runNixDebug :: NixDebug m a -> m (Either [SomeException] (Either () a))
+notImplemented :: Monad m => String -> NixDebug m a
+notImplemented = NixDebug . lift . throwError . SomeException . ErrorCall
+
+runNixDebug :: NixDebug m a -> m (Either SomeException (Either () a))
 runNixDebug (NixDebug a) = runReaderT (runExceptT (runExceptT a)) (newContext (defaultOptions $ posixSecondsToUTCTime 0))
 
 spanType :: NExprF a -> Text
@@ -221,6 +230,14 @@ spanType = \case
   NSelect _ _ _ -> "select"
   NBinary _ _ _ -> "binary"
   NStr _ -> "str"
+  NLiteralPath _ -> "literal-path"
+  NEnvPath _ -> "env-path"
+  NUnary _ _ -> "unary"
+  NHasAttr _ _ -> "has-attr"
+  NAbs _ _ -> "abs"
+  NIf _ _ _ -> "if"
+  NWith _ _ -> "with"
+  NAssert _ _ -> "assert"
 
 renderExpr :: DomBuilder t m => (r -> m a) -> NExprF r -> m (NExprF a)
 renderExpr r e = case e of
@@ -271,6 +288,11 @@ renderExpr r e = case e of
           pure $ Plain v
       text "\""
       pure $ DoubleQuoted l'
+  _ -> do
+    text $ "<" <> spanType e <> ">"
+    result <- traverse r e
+    text $ "</" <> spanType e <> ">"
+    pure result
 
 renderAttrPath :: DomBuilder t m => (r -> m a) -> NAttrPath r -> m (NAttrPath a)
 renderAttrPath r (h :| t) = do
