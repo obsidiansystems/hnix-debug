@@ -30,6 +30,8 @@ import Data.Fix
 import Data.GADT.Compare
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
+import Data.Text.Prettyprint.Doc
+import Data.Text.Prettyprint.Doc.Render.Text
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX
 import Nix (ErrorCall (..))
@@ -40,6 +42,7 @@ import Nix.Eval
 import Nix.Expr
 import Nix.Options (defaultOptions)
 import Nix.Parser
+import Nix.Pretty
 import Nix.Render
 import Nix.Scope
 import Nix.String
@@ -77,21 +80,17 @@ tshow = T.pack . show
 type PExpr = Free NExprF (NValue (NixDebug Identity))
 
 renderValue :: DomBuilder t m => NValue (NixDebug Identity) -> m ()
-renderValue v = case _baseValue v of
-  NVConstantF a -> text $ atomText a
-  NVStrF s -> text $ tshow $ hackyStringIgnoreContext s
-  NVSetF vals _ -> do
-    text "{ "
-    ifor_ vals $ \k t -> do
-      text $ tshow k <> " = "
-      renderThunk t
-      text "; "
-    text "}"
-  x -> text $ tshow x
+renderValue = text
+  . renderStrict
+  . layoutPretty (LayoutOptions $ AvailablePerLine 80 0.4)
+  . withoutParens
+  . nixDocValue
 
-renderThunk :: DomBuilder t m => NThunk (NixDebug Identity) -> m ()
-renderThunk t = case _baseThunk t of
-  Value v -> renderValue v
+nixDocValue :: NValue (NixDebug Identity) -> NixDoc ann
+nixDocValue = cata exprFNixDoc
+  . valueToExpr
+  . removeEffects
+  . _baseValue
 
 renderP
   :: forall t m
