@@ -93,7 +93,11 @@ renderThunk :: DomBuilder t m => NThunk (NixDebug Identity) -> m ()
 renderThunk t = case _baseThunk t of
   Value v -> renderValue v
 
-renderP :: forall t m. (DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m) => PExpr -> m (Dynamic t PExpr)
+renderP
+  :: forall t m
+  .  (DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m)
+  => PExpr
+  -> m (Dynamic t PExpr)
 renderP e = do
   let renderLevel :: PExpr -> m (Event t (NValue (NixDebug Identity)), Dynamic t PExpr)
       renderLevel = \case
