@@ -17,6 +17,7 @@ library
                , obelisk-frontend
                , obelisk-generated-static
                , obelisk-route
+               , prettyprinter
                , ref-tf
                , reflex-dom
                , text

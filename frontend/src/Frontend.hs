@@ -114,7 +114,7 @@ renderP e = do
                   pure never
                 Right (Right val) -> do
                   fmap (val <$) $ button "R"
-              newExpr <- sequence <$> renderExpr renderP expr --TODO: Is there a way we can reuse the rendered DOM?
+              newExpr <- sequence <$> renderExpr (renderP <$> expr) --TODO: Is there a way we can reuse the rendered DOM?
           pure (doReduce, Free <$> newExpr)
   rec r <- widgetHold (renderLevel e) $ ffor doReduce $ \val -> do
         renderValue val
@@ -243,8 +243,8 @@ spanType = \case
   NWith _ _ -> "with"
   NAssert _ _ -> "assert"
 
-renderExpr :: DomBuilder t m => (r -> m a) -> NExprF r -> m (NExprF a)
-renderExpr r e = case e of
+renderExpr :: DomBuilder t m => NExprF (m a) -> m (NExprF a)
+renderExpr e = case e of
   NConstant a -> do
     text $ atomText a
     pure $ NConstant a
@@ -253,35 +253,35 @@ renderExpr r e = case e of
     pure $ NSym v
   NLet binds body -> do
     text "let "
-    binds' <- renderBinds r binds
+    binds' <- renderBinds binds
     text " in "
-    body' <- r body
+    body' <- body
     pure $ NLet binds' body'
   NList l -> do
     text "[ "
     l' <- forM l $ \i -> do
-      r i <* text " "
+      i <* text " "
     text "]"
     pure $ NList l'
-  NSet b -> NSet <$> renderSet r b
-  NRecSet b -> NRecSet <$> (text "rec " *> renderSet r b)
+  NSet b -> NSet <$> renderSet b
+  NRecSet b -> NRecSet <$> (text "rec " *> renderSet b)
   NSelect s p alt -> do
-    s' <- r s
+    s' <- s
     text "."
-    p' <- renderAttrPath r p
+    p' <- renderAttrPath p
     alt' <- forM alt $ \a -> do
       text " or "
-      r a
+      a
     pure $ NSelect s' p' alt'
   NBinary op a b -> do
-    a' <- r a
+    a' <- a
     text " "
     case op of
       NApp -> blank
       _ -> do
         text $ operatorName $ getBinaryOperator op
         text " "
-    b' <- r b
+    b' <- b
     pure $ NBinary op a' b'
   NStr s -> NStr <$> case s of
     DoubleQuoted l -> do
@@ -294,44 +294,44 @@ renderExpr r e = case e of
       pure $ DoubleQuoted l'
   _ -> do
     text $ "<" <> spanType e <> ">"
-    result <- traverse r e
+    result <- sequence e
     text $ "</" <> spanType e <> ">"
     pure result
 
-renderAttrPath :: DomBuilder t m => (r -> m a) -> NAttrPath r -> m (NAttrPath a)
-renderAttrPath r (h :| t) = do
-  h' <- renderKeyName r h
+renderAttrPath :: DomBuilder t m => NAttrPath (m a) -> m (NAttrPath a)
+renderAttrPath (h :| t) = do
+  h' <- renderKeyName h
   t' <- forM t $ \n -> do
     text "."
-    renderKeyName r n
+    renderKeyName n
   pure $ h' :| t'
 
-renderKeyName :: DomBuilder t m => (r -> m a) -> NKeyName r -> m (NKeyName a)
-renderKeyName r = \case
+renderKeyName :: DomBuilder t m => NKeyName (m a) -> m (NKeyName a)
+renderKeyName = \case
   StaticKey n -> do
     text n
     pure $ StaticKey n
 
-renderSet :: DomBuilder t m => (r -> m a) -> [Binding r] -> m [Binding a]
-renderSet r b = do
+renderSet :: DomBuilder t m => [Binding (m a)] -> m [Binding a]
+renderSet b = do
   text "{"
-  b' <- renderBinds r b
+  b' <- renderBinds b
   text "}"
   pure b'
 
-renderBinds :: DomBuilder t m => (r -> m a) -> [Binding r] -> m [Binding a]
-renderBinds r b = forM b $ \i -> do
+renderBinds :: DomBuilder t m => [Binding (m a)] -> m [Binding a]
+renderBinds b = forM b $ \i -> do
   bind' <- case i of
     NamedVar p v x -> do
-      p' <- renderAttrPath r p
+      p' <- renderAttrPath p
       text " = "
-      v' <- r v
+      v' <- v
       pure $ NamedVar p' v' x
     Inherit mCtx names x -> do
       text "inherit "
       mCtx' <- forM mCtx $ \ctx -> do
         text "("
-        ctx' <- r ctx
+        ctx' <- ctx
         text ")"
         pure ctx'
       names' <- forM names $ \i -> case i of
