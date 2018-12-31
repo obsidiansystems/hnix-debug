@@ -1,6 +1,6 @@
 {
   "url": "git://github.com/haskell-nix/hnix",
-  "rev": "07dd6ac3f3a7804a971aa803a4c79509eb107dcb",
-  "sha256": "0hy793zry44n016nggi3hlpfns3hbbz0xzm9k8i52bcfqbpajgqh",
+  "rev": "617d0867ab96c8f97b02c4524bd948d9f114005e",
+  "sha256": "037kxj9wirynmavlp7d0k19a5xrhj117hlh3yia12xj6v828b99z",
   "fetchSubmodules": true
 }

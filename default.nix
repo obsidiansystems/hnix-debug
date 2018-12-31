@@ -5,6 +5,10 @@ with import ./.obelisk/impl { inherit system iosSdkVersion; };
 project ./. ({ pkgs, hackGet, ... }: {
   packages = {
     hnix = hackGet ./dep/hnix;
+    # Cabal snapshot too old:
+    megaparsec = hackGet ./dep/megaparsec;
+    hspec-megaparsec = hackGet ./dep/hspec-megaparsec;
+    modern-uri = hackGet ./dep/modern-uri;
   };
   overrides = with pkgs.haskell.lib; self: super: if super.ghc.isGhcjs or false then {
     hnix = dontCheck super.hnix;
