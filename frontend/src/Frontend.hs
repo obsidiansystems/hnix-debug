@@ -31,9 +31,10 @@ import Data.GADT.Compare
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text.Prettyprint.Doc
-import Data.Text.Prettyprint.Doc.Render.Text
+import Data.Text.Prettyprint.Doc.Render.Util.SimpleDocTree
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX
+import Data.Traversable
 import Nix (ErrorCall (..))
 import Nix.Atoms
 import Nix.Context
@@ -79,18 +80,51 @@ tshow = T.pack . show
 
 type PExpr = Free NExprF (NValue (NixDebug Identity))
 
-renderValue :: DomBuilder t m => NValue (NixDebug Identity) -> m ()
-renderValue = text
-  . renderStrict
+data MonoidM m a = MonoidM { getMonoidM :: m [a] }
+
+instance Monad m => Semigroup (MonoidM m a) where
+  MonoidM x <> MonoidM y = MonoidM $ (++) <$> x <*> y
+
+instance Monad m => Monoid (MonoidM m a) where
+  mempty = MonoidM $ pure []
+
+renderNixDoc :: DomBuilder t m => NixDoc (m a) -> m [a]
+renderNixDoc = getMonoidM
+  . renderSimplyDecorated
+      (\t -> MonoidM $ [] <$ text t)
+      (\ x y -> MonoidM $ (:) <$> x <*> getMonoidM y)
+  . treeForm
   . layoutPretty (LayoutOptions $ AvailablePerLine 80 0.4)
   . withoutParens
-  . nixDocValue
 
 nixDocValue :: NValue (NixDebug Identity) -> NixDoc ann
 nixDocValue = cata exprFNixDoc
   . valueToExpr
   . removeEffects
   . _baseValue
+
+renderValue
+  :: DomBuilder t m
+  => NValue (NixDebug Identity)
+  -> m ()
+renderValue = void . renderNixDoc . nixDocValue
+
+-- TODO I'd like this to be correct by construction rather than use all the
+-- partial pattern matches, but I don't know how.
+renderExpr
+  :: forall t m a
+  .  DomBuilder t m
+  => NExprF (m a)
+  -> m (NExprF a)
+renderExpr e = do
+  (as :: [a]) <- renderNixDoc $ exprFNixDoc $ ffor e $
+    simpleExpr . flip annotate emptyDoc
+  -- We get all the results of running each action, and replace each action with
+  -- the result. The partial patterns below should never miss because the
+  -- results list is 1-1 with the "holes" of the NExprF functor.
+  let f (a:as) _actionForWhichWeHaveResult = (as, a)
+  let ([], res) = mapAccumL f as e
+  pure res
 
 renderP
   :: forall t m
@@ -135,7 +169,6 @@ instance Monad m => MonadThrow (NixDebug m) where
 instance MonadRef Identity where
   type Ref Identity = RefIdentity
 
---TODO: Leverage existing pretty-printer
 --TODO: Styling of "reduce" button
 --TODO: Small-step reduction
 reduce :: NExprF PExpr -> Identity (Either SomeException (Either () (NValue (NixDebug Identity))))
@@ -241,102 +274,3 @@ spanType = \case
   NIf _ _ _ -> "if"
   NWith _ _ -> "with"
   NAssert _ _ -> "assert"
-
-renderExpr :: DomBuilder t m => NExprF (m a) -> m (NExprF a)
-renderExpr e = case e of
-  NConstant a -> do
-    text $ atomText a
-    pure $ NConstant a
-  NSym v -> do
-    text v
-    pure $ NSym v
-  NLet binds body -> do
-    text "let "
-    binds' <- renderBinds binds
-    text " in "
-    body' <- body
-    pure $ NLet binds' body'
-  NList l -> do
-    text "[ "
-    l' <- forM l $ \i -> do
-      i <* text " "
-    text "]"
-    pure $ NList l'
-  NSet b -> NSet <$> renderSet b
-  NRecSet b -> NRecSet <$> (text "rec " *> renderSet b)
-  NSelect s p alt -> do
-    s' <- s
-    text "."
-    p' <- renderAttrPath p
-    alt' <- forM alt $ \a -> do
-      text " or "
-      a
-    pure $ NSelect s' p' alt'
-  NBinary op a b -> do
-    a' <- a
-    text " "
-    case op of
-      NApp -> blank
-      _ -> do
-        text $ operatorName $ getBinaryOperator op
-        text " "
-    b' <- b
-    pure $ NBinary op a' b'
-  NStr s -> NStr <$> case s of
-    DoubleQuoted l -> do
-      text "\""
-      l' <- forM l $ \case
-        Plain v -> do
-          text v
-          pure $ Plain v
-      text "\""
-      pure $ DoubleQuoted l'
-  _ -> do
-    text $ "<" <> spanType e <> ">"
-    result <- sequence e
-    text $ "</" <> spanType e <> ">"
-    pure result
-
-renderAttrPath :: DomBuilder t m => NAttrPath (m a) -> m (NAttrPath a)
-renderAttrPath (h :| t) = do
-  h' <- renderKeyName h
-  t' <- forM t $ \n -> do
-    text "."
-    renderKeyName n
-  pure $ h' :| t'
-
-renderKeyName :: DomBuilder t m => NKeyName (m a) -> m (NKeyName a)
-renderKeyName = \case
-  StaticKey n -> do
-    text n
-    pure $ StaticKey n
-
-renderSet :: DomBuilder t m => [Binding (m a)] -> m [Binding a]
-renderSet b = do
-  text "{"
-  b' <- renderBinds b
-  text "}"
-  pure b'
-
-renderBinds :: DomBuilder t m => [Binding (m a)] -> m [Binding a]
-renderBinds b = forM b $ \i -> do
-  bind' <- case i of
-    NamedVar p v x -> do
-      p' <- renderAttrPath p
-      text " = "
-      v' <- v
-      pure $ NamedVar p' v' x
-    Inherit mCtx names x -> do
-      text "inherit "
-      mCtx' <- forM mCtx $ \ctx -> do
-        text "("
-        ctx' <- ctx
-        text ")"
-        pure ctx'
-      names' <- forM names $ \i -> case i of
-        StaticKey n -> do
-          text n
-          pure $ StaticKey n
-      pure $ Inherit mCtx' names' x
-  text ";"
-  pure bind'
